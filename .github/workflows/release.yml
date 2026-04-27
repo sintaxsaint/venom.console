@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc libm-dev
+          sudo apt-get install -y gcc
 
       - name: Compile
         run: gcc venom_console.c -o venom_console -lm
