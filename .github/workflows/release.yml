@@ -83,21 +83,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64
 
-      - name: Compile
+      - name: Compile with UAC manifest
         run: |
-          x86_64-w64-mingw32-gcc venom_console.c \
-            -o venom_console.exe \
-            -lws2_32 \
-            -static \
-            -DVENOM_WINDOWS
-
-      - name: Embed UAC manifest
-        run: |
-          # Build a resource file that embeds the manifest
-          cat > manifest.rc << 'EOF'
-          #include <windows.h>
-          1 RT_MANIFEST venom_console_manifest.xml
-          EOF
+          # Write the resource file (no leading spaces — windres is strict)
+          printf '#include <windows.h>\n1 RT_MANIFEST venom_console.manifest.xml\n' > manifest.rc
           x86_64-w64-mingw32-windres manifest.rc -o manifest.o
           x86_64-w64-mingw32-gcc venom_console.c manifest.o \
             -o venom_console.exe \
@@ -132,23 +121,18 @@ jobs:
 
       - name: Write Flatpak manifest
         run: |
-          cat > io.github.sintaxsaint.venom-console.yml << 'EOF'
+          cat > io.github.sintaxsaint.venom-console.yml << 'FLATPAK_EOF'
           app-id: io.github.sintaxsaint.venom-console
           runtime: org.freedesktop.Platform
           runtime-version: "23.08"
           sdk: org.freedesktop.Sdk
           command: venom_console
-
           finish-args:
-            # Terminal app — needs host filesystem and network
             - --share=network
             - --share=ipc
             - --socket=fallback-x11
             - --filesystem=host
             - --device=all
-            # Allow running as root inside the sandbox via sudo wrapper
-            - --allow=multiarch
-
           modules:
             - name: venom-console
               buildsystem: simple
@@ -158,10 +142,10 @@ jobs:
                 - install -Dm755 venom /app/bin/venom
                 - install -Dm644 README.md /app/share/doc/venom-console/README.md
               sources:
-                - type: git
-                  url: https://github.com/sintaxsaint/venom.console
-                  branch: main
-          EOF
+                - type: dir
+                  path: .
+          FLATPAK_EOF
+          sed -i 's/^          //' io.github.sintaxsaint.venom-console.yml
 
       - name: Build Flatpak
         run: |
