@@ -1,0 +1,28 @@
+#!/bin/sh
+# venom — launcher wrapper for venom.console
+#
+# This script is disclosed in the README.
+# venom.console requests root/sudo on launch because it needs
+# elevated access for: hosts file editing, process management,
+# network configuration, power commands, and port scanning.
+#
+# Users who install venom.console accept this behaviour.
+# Nothing happens silently — sudo will prompt for your password
+# as normal. You can audit everything in venom_console.c.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BINARY="$SCRIPT_DIR/venom_console"
+
+if [ ! -f "$BINARY" ]; then
+    echo "venom: binary not found at $BINARY"
+    echo "Build with: gcc venom_console.c -o venom_console -lm"
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "venom.console requires elevated privileges for full functionality."
+    echo "Relaunching with sudo..."
+    exec sudo "$BINARY" "$@"
+fi
+
+exec "$BINARY" "$@"
