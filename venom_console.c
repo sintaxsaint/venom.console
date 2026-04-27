@@ -85,7 +85,7 @@
    VERSION & CONSTANTS
    ================================================================ */
 #define VENOM_VERSION    "venom.console v3.0"
-#define MAX_INPUT        4096
+#define VENOM_MAX_INPUT  4096
 #define MAX_PATH_LEN     2048
 #define CFG_HF_KEY_MAX   256
 #define CFG_PIN_MAX      64
@@ -967,7 +967,7 @@ static void print_tree_node(const char *path, const char *prefix, int depth) {
         venom_reset_color();
         if(is_dir){
             char np[MAX_PATH_LEN];
-            snprintf(np,sizeof(np),"%s%s",prefix,last?"    "?"│   ");
+            snprintf(np,sizeof(np),"%s%s",prefix,last?"    ":"│   ");
             print_tree_node(full,np,depth+1);
         }
         free(entries[i]);
@@ -1703,7 +1703,7 @@ static void cmd_hexenc(const char *a) {
 static void cmd_hexdec(const char *a) {
     if(!a||!*a){printf("Usage: hexdec <hexstring>\n");return;}
     /* strip spaces */
-    char clean[MAX_INPUT]; int ci=0;
+    char clean[VENOM_MAX_INPUT]; int ci=0;
     for(const char *p=a;*p;p++) if(!isspace((unsigned char)*p)) clean[ci++]=*p;
     clean[ci]='\0';
     char *out=(char*)malloc(ci/2+2); int oi=0;
@@ -1740,7 +1740,7 @@ static void cmd_rot13(const char *a) {
 
 static void cmd_urlenc(const char *a) {
     if(!a||!*a){printf("Usage: urlenc <text>\n");return;}
-    char out[MAX_INPUT*3]; int oi=0;
+    char out[VENOM_MAX_INPUT*3]; int oi=0;
     for(const unsigned char *p=(const unsigned char*)a;*p;p++){
         if(isalnum(*p)||*p=='-'||*p=='_'||*p=='.'||*p=='~')
             out[oi++]=*p;
@@ -1824,22 +1824,29 @@ static void cmd_guid(const char *a) {
 /* Proper expression evaluator: supports +,-,*,/,% and functions */
 static double eval_expr(const char *s, int *err);
 
+/* Forward declarations */
+static double eval_expr_pos(const char *s, int *pos, int *err);
+static double eval_power(const char *s, int *pos, int *err);
+
 static double eval_primary(const char *s, int *pos, int *err) {
     while(s[*pos]==' ') (*pos)++;
     /* Functions */
     if(strncmp(s+*pos,"sqrt(",5)==0){
-        *pos+=5; double v=eval_expr(s+*pos,err);
-        (*pos)+=5; /* skip past ')' approximately */
+        *pos+=5;
+        double v=eval_expr_pos(s,pos,err);
+        if(s[*pos]==')') (*pos)++;
         return sqrt(v);
     }
     if(strncmp(s+*pos,"abs(",4)==0){
-        *pos+=4; double v=eval_expr(s+*pos,err);
+        *pos+=4;
+        double v=eval_expr_pos(s,pos,err);
+        if(s[*pos]==')') (*pos)++;
         return fabs(v);
     }
     /* Parentheses */
     if(s[*pos]=='('){
         (*pos)++;
-        double v=eval_expr(s+*pos,err);
+        double v=eval_expr_pos(s,pos,err);
         if(s[*pos]==')') (*pos)++;
         return v;
     }
@@ -1852,27 +1859,53 @@ static double eval_primary(const char *s, int *pos, int *err) {
     return v;
 }
 
-static double eval_term(const char *s, int *pos, int *err) {
+/* Forward declaration for mutual recursion */
+static double eval_expr_pos(const char *s, int *pos, int *err);
+
+/* Right-associative power: 2^3^2 = 2^(3^2) = 512 */
+static double eval_power(const char *s, int *pos, int *err) {
     double v=eval_primary(s,pos,err);
+    while(s[*pos]==' ') (*pos)++;
+    while(s[*pos]=='^'){
+        (*pos)++;
+        while(s[*pos]==' ') (*pos)++;
+        double r=eval_power(s,pos,err);
+        v=pow(v,r);
+    }
+    return v;
+}
+
+static double eval_term(const char *s, int *pos, int *err) {
+    double v=eval_power(s,pos,err);
+    while(s[*pos]==' ') (*pos)++;
     while(s[*pos]=='*'||s[*pos]=='/'||s[*pos]=='%'){
         char op=s[(*pos)++];
-        double r=eval_primary(s,pos,err);
+        while(s[*pos]==' ') (*pos)++;
+        double r=eval_power(s,pos,err);
         if(op=='*') v*=r;
         else if(op=='/') v=(r!=0)?v/r:0;
         else v=(long long)v%(long long)r;
+        while(s[*pos]==' ') (*pos)++;
+    }
+    return v;
+}
+
+static double eval_expr_pos(const char *s, int *pos, int *err) {
+    double v=eval_term(s,pos,err);
+    while(s[*pos]==' ') (*pos)++;
+    while(s[*pos]=='+'||s[*pos]=='-'){
+        char op=s[(*pos)++];
+        while(s[*pos]==' ') (*pos)++;
+        double r=eval_term(s,pos,err);
+        if(op=='+') v+=r; else v-=r;
+        while(s[*pos]==' ') (*pos)++;
     }
     return v;
 }
 
 static double eval_expr(const char *s, int *err) {
     int pos=0;
-    double v=eval_term(s,&pos,err);
-    while(s[pos]=='+'||s[pos]=='-'){
-        char op=s[pos++];
-        double r=eval_term(s,&pos,err);
-        if(op=='+') v+=r; else v-=r;
-    }
-    return v;
+    return eval_expr_pos(s,&pos,err);
 }
 
 static void cmd_calcpy(const char *a) {
@@ -1980,7 +2013,7 @@ static void cmd_hexplain(const char *a) {
 static void cmd_clipcopy(const char *a) {
     if(!a||!*a){printf("Usage: clipcopy <text>\n");return;}
 #ifdef VENOM_WINDOWS
-    char cmd[MAX_INPUT+64]; snprintf(cmd,sizeof(cmd),"echo %s|clip",a); system(cmd);
+    char cmd[VENOM_MAX_INPUT+64]; snprintf(cmd,sizeof(cmd),"echo %s|clip",a); system(cmd);
     vprint(COL_GREEN,"  Copied to clipboard.\n");
 #elif defined(__APPLE__)
     FILE *f=popen("pbcopy","w"); if(f){fputs(a,f);pclose(f);vprint(COL_GREEN,"  Copied.\n");}
@@ -2083,7 +2116,7 @@ static void cmd_history(const char *a) {
     printf("  File: %s\n\n",g_hist_path);
     FILE *f=fopen(g_hist_path,"r");
     if(!f){printf("  (no history yet)\n");return;}
-    char line[MAX_INPUT]; int n=1;
+    char line[VENOM_MAX_INPUT]; int n=1;
     /* If search term given */
     const char *term=(a&&*a)?a:NULL;
     while(fgets(line,sizeof(line),f)){
@@ -2295,11 +2328,11 @@ static void ollama_chat(const char *host, int port, const char *model,
         snprintf(out,outlen,"Cannot connect to Ollama at %s:%d",host,port);
         venom_closesocket(s);return;
     }
-    char json[MAX_INPUT+512];
+    char json[VENOM_MAX_INPUT+512];
     snprintf(json,sizeof(json),
         "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],"
         "\"stream\":false}",model,user_msg);
-    char req[MAX_INPUT+1024];
+    char req[VENOM_MAX_INPUT+1024];
     snprintf(req,sizeof(req),
         "POST /api/chat HTTP/1.0\r\nHost: %s:%d\r\n"
         "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
@@ -2340,7 +2373,7 @@ static void openai_chat(const char *endpoint, const char *key, const char *model
         strncpy(host,url,sizeof(host)-1);
         strcpy(path,"/v1/chat/completions");
     }
-    char json[MAX_INPUT+512];
+    char json[VENOM_MAX_INPUT+512];
     snprintf(json,sizeof(json),
         "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],"
         "\"max_tokens\":500}",model,msg);
@@ -2359,7 +2392,7 @@ static void openai_chat(const char *endpoint, const char *key, const char *model
         snprintf(out,outlen,"Connect failed to %s",host);
         venom_closesocket(s);return;
     }
-    char req[MAX_INPUT+1024];
+    char req[VENOM_MAX_INPUT+1024];
     snprintf(req,sizeof(req),
         "POST %s HTTP/1.0\r\nHost: %s\r\n"
         "Authorization: Bearer %s\r\n"
@@ -2394,7 +2427,7 @@ static void cmd_chatbot(const char *args) {
         printf("  (HuggingFace)\n");
     printf("  Type 'exit' to quit\n\n");
 
-    char user_msg[MAX_INPUT], ai_resp[8192];
+    char user_msg[VENOM_MAX_INPUT], ai_resp[8192];
     while(1){
         vprint(COL_CYAN,"You> "); fflush(stdout);
         if(!fgets(user_msg,sizeof(user_msg),stdin)) break;
@@ -2933,7 +2966,7 @@ int main(void) {
     vprint(COL_YELLOW,"  Type 'help' for commands.  'setup' for first-run wizard.\n\n");
 
     /* ---- Main loop ---- */
-    char line[MAX_INPUT];
+    char line[VENOM_MAX_INPUT];
     while(1){
         /* Prompt */
         vprint(COL_BLUE,"venom");

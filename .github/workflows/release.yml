@@ -1,0 +1,260 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  # Linux: binary + .deb
+  # ─────────────────────────────────────────────
+  build-linux:
+    name: Linux (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libm-dev
+
+      - name: Compile
+        run: gcc venom_console.c -o venom_console -lm
+
+      - name: Build .deb package
+        run: |
+          VERSION=$(grep '#define VENOM_VERSION' venom_console.c \
+            | sed 's/.*v\([0-9.]*\)".*/\1/')
+          PKG=venom-console_${VERSION}_amd64
+
+          mkdir -p ${PKG}/DEBIAN
+          mkdir -p ${PKG}/usr/bin
+          mkdir -p ${PKG}/usr/share/doc/venom-console
+
+          cp venom_console ${PKG}/usr/bin/venom_console
+          cp venom         ${PKG}/usr/bin/venom
+          chmod +x ${PKG}/usr/bin/venom_console
+          chmod +x ${PKG}/usr/bin/venom
+          cp README.md ${PKG}/usr/share/doc/venom-console/
+
+          cat > ${PKG}/DEBIAN/control << EOF
+          Package: venom-console
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: sintaxsaint
+          Description: venom.console — cross-platform power console
+           A powerful terminal console with system tools, networking,
+           AI integration, hashing, encoding, and more.
+          EOF
+
+          # strip leading whitespace from heredoc
+          sed -i 's/^          //' ${PKG}/DEBIAN/control
+
+          dpkg-deb --build ${PKG}
+          mv ${PKG}.deb venom-console_${VERSION}_amd64.deb
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            venom_console
+            venom-console_*.deb
+
+  # ─────────────────────────────────────────────
+  # Windows: .exe (cross-compiled via MinGW)
+  # ─────────────────────────────────────────────
+  build-windows:
+    name: Windows (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Compile
+        run: |
+          x86_64-w64-mingw32-gcc venom_console.c \
+            -o venom_console.exe \
+            -lws2_32 \
+            -static \
+            -DVENOM_WINDOWS
+
+      - name: Embed UAC manifest
+        run: |
+          # Build a resource file that embeds the manifest
+          cat > manifest.rc << 'EOF'
+          #include <windows.h>
+          1 RT_MANIFEST venom_console_manifest.xml
+          EOF
+          x86_64-w64-mingw32-windres manifest.rc -o manifest.o
+          x86_64-w64-mingw32-gcc venom_console.c manifest.o \
+            -o venom_console.exe \
+            -lws2_32 \
+            -static \
+            -DVENOM_WINDOWS
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: venom_console.exe
+
+  # ─────────────────────────────────────────────
+  # Flatpak bundle
+  # ─────────────────────────────────────────────
+  build-flatpak:
+    name: Flatpak
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub \
+            org.freedesktop.Platform//23.08 \
+            org.freedesktop.Sdk//23.08
+
+      - name: Write Flatpak manifest
+        run: |
+          cat > io.github.sintaxsaint.venom-console.yml << 'EOF'
+          app-id: io.github.sintaxsaint.venom-console
+          runtime: org.freedesktop.Platform
+          runtime-version: "23.08"
+          sdk: org.freedesktop.Sdk
+          command: venom_console
+
+          finish-args:
+            # Terminal app — needs host filesystem and network
+            - --share=network
+            - --share=ipc
+            - --socket=fallback-x11
+            - --filesystem=host
+            - --device=all
+            # Allow running as root inside the sandbox via sudo wrapper
+            - --allow=multiarch
+
+          modules:
+            - name: venom-console
+              buildsystem: simple
+              build-commands:
+                - gcc venom_console.c -o venom_console -lm
+                - install -Dm755 venom_console /app/bin/venom_console
+                - install -Dm755 venom /app/bin/venom
+                - install -Dm644 README.md /app/share/doc/venom-console/README.md
+              sources:
+                - type: git
+                  url: https://github.com/sintaxsaint/venom.console
+                  branch: main
+          EOF
+
+      - name: Build Flatpak
+        run: |
+          flatpak-builder \
+            --force-clean \
+            --repo=flatpak-repo \
+            build-dir \
+            io.github.sintaxsaint.venom-console.yml
+
+      - name: Export as .flatpak bundle
+        run: |
+          flatpak build-bundle \
+            flatpak-repo \
+            venom-console.flatpak \
+            io.github.sintaxsaint.venom-console
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-artifact
+          path: venom-console.flatpak
+
+  # ─────────────────────────────────────────────
+  # Release: collect all artifacts and publish
+  # ─────────────────────────────────────────────
+  release:
+    name: Publish Release
+    needs: [build-linux, build-windows, build-flatpak]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '#define VENOM_VERSION' venom_console.c \
+            | sed 's/.*v\([0-9.]*\)".*/\1/')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${VERSION}-$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Flatten artifact folders
+        run: |
+          find dist/ -type f | while read f; do
+            mv "$f" dist/$(basename "$f")
+          done
+          find dist/ -type d -empty -delete
+          ls -lh dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "venom.console v${{ steps.version.outputs.version }}"
+          body: |
+            ## venom.console v${{ steps.version.outputs.version }}
+
+            Automatically built from commit ${{ github.sha }}
+
+            ### Downloads
+
+            | File | Platform |
+            |------|----------|
+            | `venom_console` | Linux x86_64 (raw binary) |
+            | `venom-console_*.deb` | Linux x86_64 (.deb package) |
+            | `venom_console.exe` | Windows x86_64 |
+            | `venom-console.flatpak` | Linux (Flatpak bundle) |
+
+            ### Install
+
+            **Linux binary**
+            ```bash
+            chmod +x venom_console venom
+            ./venom
+            ```
+
+            **Debian/Ubuntu .deb**
+            ```bash
+            sudo dpkg -i venom-console_*.deb
+            venom
+            ```
+
+            **Flatpak**
+            ```bash
+            flatpak install venom-console.flatpak
+            flatpak run io.github.sintaxsaint.venom-console
+            ```
+
+            **Windows**
+            Run `venom_console.exe` — UAC prompt is expected and disclosed.
+          files: dist/*
+          fail_on_unmatched_files: false
